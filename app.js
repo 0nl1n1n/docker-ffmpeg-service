@@ -21,10 +21,19 @@ for (let prop in endpoints.types) {
             let hitLimit = false;
             let fileName = '';
             let savedFile = uniqueFilename(__dirname + '/uploads/');
+            let uploadedFiles = [];
+            let fileCount = 0;
+            let expectedFiles = 1;
+            
+            // Check if this endpoint requires multiple files
+            if (ffmpegParams.multiFile && ffmpegParams.requires) {
+                expectedFiles = ffmpegParams.requires.length;
+            }
+            
             let busboy = new Busboy({
                 headers: req.headers,
                 limits: {
-                    files: 1,
+                    files: expectedFiles,
                     fileSize: consts.fileSizeLimit,
             }});
             busboy.on('filesLimit', function() {
@@ -68,71 +77,195 @@ for (let prop in endpoints.types) {
                     action: 'Uploading',
                     name: fileName,
                 }));
-                let written = file.pipe(fs.createWriteStream(savedFile));
+                
+                let currentSavedFile = uniqueFilename(__dirname + '/uploads/');
+                uploadedFiles.push({
+                    fieldname: fieldname,
+                    filename: filename,
+                    savedFile: currentSavedFile,
+                    mimetype: mimetype
+                });
+                
+                let written = file.pipe(fs.createWriteStream(currentSavedFile));
 
                 if (written) {
                     winston.info(JSON.stringify({
                         action: 'saved',
-                        path: savedFile,
+                        path: currentSavedFile,
                     }));
                 }
             });
             busboy.on('finish', function() {
                 if (hitLimit) {
-                    fs.unlinkSync(savedFile);
+                    // Clean up any uploaded files
+                    uploadedFiles.forEach(file => {
+                        if (fs.existsSync(file.savedFile)) {
+                            fs.unlinkSync(file.savedFile);
+                        }
+                    });
                     return;
                 }
+                
                 winston.info(JSON.stringify({
                     action: 'upload complete',
-                    name: fileName,
+                    files: uploadedFiles.map(f => f.filename),
                 }));
-                let outputFile = savedFile + '.' + ffmpegParams.extension;
-                winston.info(JSON.stringify({
-                    action: 'begin conversion',
-                    from: savedFile,
-                    to: outputFile,
-                }));
-                let ffmpegConvertCommand = ffmpeg(savedFile);
-                ffmpegConvertCommand
-                        .renice(15)
-                        .outputOptions(ffmpegParams.outputOptions)
-                        .on('error', function(err) {
-                            let log = JSON.stringify({
-                                type: 'ffmpeg',
-                                message: err,
-                            });
-                            winston.error(log);
-                            fs.unlinkSync(savedFile);
-                            res.writeHead(500, {'Connection': 'close'});
-                            res.end(log);
-                        })
-                        .on('end', function() {
-                            fs.unlinkSync(savedFile);
-                            winston.info(JSON.stringify({
-                                action: 'starting download to client',
-                                file: savedFile,
-                            }));
-
-                            res.download(outputFile, null, function(err) {
-                                if (err) {
-                                    winston.error(JSON.stringify({
-                                        type: 'download',
-                                        message: err,
-                                    }));
-                                }
+                
+                let outputFile = uniqueFilename(__dirname + '/uploads/') + '.' + ffmpegParams.extension;
+                
+                // Handle multi-file processing (audio-image-mp4)
+                if (ffmpegParams.multiFile && uploadedFiles.length >= 2) {
+                    let audioFile = null;
+                    let imageFile = null;
+                    
+                    // Find audio and image files
+                    uploadedFiles.forEach(file => {
+                        if (file.mimetype.startsWith('audio/')) {
+                            audioFile = file.savedFile;
+                        } else if (file.mimetype.startsWith('image/')) {
+                            imageFile = file.savedFile;
+                        }
+                    });
+                    
+                    if (audioFile && imageFile) {
+                        winston.info(JSON.stringify({
+                            action: 'begin audio-image conversion',
+                            audio: audioFile,
+                            image: imageFile,
+                            to: outputFile,
+                        }));
+                        
+                        let ffmpegConvertCommand = ffmpeg()
+                            .input(imageFile)
+                            .input(audioFile)
+                            .renice(15)
+                            .outputOptions(ffmpegParams.outputOptions)
+                            .on('error', function(err) {
+                                let log = JSON.stringify({
+                                    type: 'ffmpeg',
+                                    message: err,
+                                });
+                                winston.error(log);
+                                // Clean up uploaded files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                res.writeHead(500, {'Connection': 'close'});
+                                res.end(log);
+                            })
+                            .on('end', function() {
+                                // Clean up uploaded files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                
                                 winston.info(JSON.stringify({
-                                    action: 'deleting',
+                                    action: 'starting download to client',
                                     file: outputFile,
                                 }));
-                                if (fs.unlinkSync(outputFile)) {
+
+                                res.download(outputFile, null, function(err) {
+                                    if (err) {
+                                        winston.error(JSON.stringify({
+                                            type: 'download',
+                                            message: err,
+                                        }));
+                                    }
                                     winston.info(JSON.stringify({
-                                        action: 'deleted',
+                                        action: 'deleting',
                                         file: outputFile,
                                     }));
-                                }
-                            });
-                        })
-                        .save(outputFile);
+                                    if (fs.existsSync(outputFile)) {
+                                        fs.unlinkSync(outputFile);
+                                        winston.info(JSON.stringify({
+                                            action: 'deleted',
+                                            file: outputFile,
+                                        }));
+                                    }
+                                });
+                            })
+                            .save(outputFile);
+                    } else {
+                        let err = JSON.stringify({
+                            type: 'input_error',
+                            message: 'Both audio and image files are required',
+                            received: uploadedFiles.map(f => ({name: f.filename, type: f.mimetype}))
+                        });
+                        winston.error(err);
+                        // Clean up uploaded files
+                        uploadedFiles.forEach(file => {
+                            if (fs.existsSync(file.savedFile)) {
+                                fs.unlinkSync(file.savedFile);
+                            }
+                        });
+                        res.writeHead(400, {'Connection': 'close'});
+                        res.end(err);
+                    }
+                } else {
+                    // Handle single file processing (existing logic)
+                    let inputFile = uploadedFiles[0].savedFile;
+                    winston.info(JSON.stringify({
+                        action: 'begin conversion',
+                        from: inputFile,
+                        to: outputFile,
+                    }));
+                    let ffmpegConvertCommand = ffmpeg(inputFile);
+                    ffmpegConvertCommand
+                            .renice(15)
+                            .outputOptions(ffmpegParams.outputOptions)
+                            .on('error', function(err) {
+                                let log = JSON.stringify({
+                                    type: 'ffmpeg',
+                                    message: err,
+                                });
+                                winston.error(log);
+                                // Clean up uploaded files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                res.writeHead(500, {'Connection': 'close'});
+                                res.end(log);
+                            })
+                            .on('end', function() {
+                                // Clean up uploaded files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                winston.info(JSON.stringify({
+                                    action: 'starting download to client',
+                                    file: outputFile,
+                                }));
+
+                                res.download(outputFile, null, function(err) {
+                                    if (err) {
+                                        winston.error(JSON.stringify({
+                                            type: 'download',
+                                            message: err,
+                                        }));
+                                    }
+                                    winston.info(JSON.stringify({
+                                        action: 'deleting',
+                                        file: outputFile,
+                                    }));
+                                    if (fs.existsSync(outputFile)) {
+                                        fs.unlinkSync(outputFile);
+                                        winston.info(JSON.stringify({
+                                            action: 'deleted',
+                                            file: outputFile,
+                                        }));
+                                    }
+                                });
+                            })
+                            .save(outputFile);
+                }
             });
             return req.pipe(busboy);
         });

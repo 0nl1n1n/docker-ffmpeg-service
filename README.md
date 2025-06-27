@@ -12,6 +12,8 @@ Based off of jrottenberg/ffmpeg container
 
 > POST /jpg - Convert image file to jpg
 
+> POST /audio-image-mp4 - Mix an audio file with an image to create an MP4 video
+
 > GET /, /readme - Web Service Readme
 
 ### /mp3, /m4a
@@ -28,6 +30,21 @@ Based off of jrottenberg/ffmpeg container
 > curl -F "file=@input.tiff" 127.0.0.1:3000/jpg  > output.jpg
 
 > curl -F "file=@input.png" 127.0.0.1:3000/jpg  > output.jpg
+
+### /audio-image-mp4
+
+Mix an audio file with an image to create an MP4 video. Upload both files in the same request:
+
+> curl -F "audio=@input.mp3" -F "image=@input.jpg" 127.0.0.1:3000/audio-image-mp4 > output.mp4
+
+> curl -F "audio=@input.wav" -F "image=@input.png" 127.0.0.1:3000/audio-image-mp4 > output.mp4
+
+> curl -F "audio=@input.m4a" -F "image=@input.tiff" 127.0.0.1:3000/audio-image-mp4 > output.mp4
+
+**Supported audio formats:** mp3, wav, m4a, aac, ogg, flac
+**Supported image formats:** jpg, jpeg, png, gif, bmp, tiff
+
+The resulting video will have the image as a static frame with the audio playing over it. The video duration will match the audio duration.
 
 ## Configuration and New Endpoints
 You can change the ffmpeg conversion settings or add new endpoints by editing 
