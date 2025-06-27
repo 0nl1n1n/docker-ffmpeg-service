@@ -16,7 +16,6 @@ Based off of jrottenberg/ffmpeg container
 
 ### /mp3, /m4a
 
-Curl Ex:hh  tybhtbhrb
 
 > curl -F "file=@input.wav" 127.0.0.1:3000/mp3  > output.mp3
 
