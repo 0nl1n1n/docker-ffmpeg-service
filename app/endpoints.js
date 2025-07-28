@@ -4,18 +4,21 @@ exports.types = {
         outputOptions: [
             '-pix_fmt yuv422p',
         ],
+        urlSupport: true,
     },
     m4a: {
         extension: 'm4a',
         outputOptions: [
             '-codec:a libfdk_aac',
         ],
+        urlSupport: true,
     },
     mp3: {
         extension: 'mp3',
         outputOptions: [
             '-codec:a libmp3lame',
         ],
+        urlSupport: true,
     },
     mp4: {
         extension: 'mp4',
@@ -33,6 +36,7 @@ exports.types = {
             '-codec:a libfdk_aac',
             '-b:a 128k',
         ],
+        urlSupport: true,
     },
     'audio-image-mp4': {
         extension: 'mp4',
@@ -45,13 +49,34 @@ exports.types = {
             '-b:v 1000k',
             '-maxrate 1000k',
             '-bufsize 2000k',
-            '-vf scale=-2:720',
+            '-vf scale=-2:720,format=yuv420p',
             '-threads 8',
             '-codec:a libfdk_aac',
             '-b:a 128k',
-            '-shortest',
         ],
         multiFile: true,
         requires: ['audio', 'image'],
+        urlSupport: true,
+    },
+    'audio-duration': {
+        extension: 'txt',
+        ffprobe: true,
+        outputOptions: [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1'
+        ],
+        urlSupport: true,
+    },
+    'audio-mix': {
+        extension: 'mp3',
+        multiFile: true,
+        requires: ['background', 'vocals'],
+        complexFilter: true,
+        outputOptions: [
+            '-codec:a', 'libmp3lame',
+            '-b:a', '192k',
+        ],
+        urlSupport: true,
     },
 };

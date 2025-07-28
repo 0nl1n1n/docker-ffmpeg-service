@@ -1,13 +1,13 @@
-FROM jrottenberg/ffmpeg:centos
+FROM ubuntu:20.04
 
-MAINTAINER Paul Visco <paul.visco@gmail.com>
+LABEL maintainer="Paul Visco <paul.visco@gmail.com>"
 
 #####################################################################
 #
 # A Docker image to convert audio and video for web using web API
 #
 #   with
-#     - Latest FFMPEG (built)
+#     - FFMPEG (built from source)
 #     - NodeJS
 #     - fluent-ffmpeg
 #
@@ -17,45 +17,76 @@ MAINTAINER Paul Visco <paul.visco@gmail.com>
 #
 #####################################################################
 
-# Add the following two dependencies for nodejs
-RUN yum install -y git
-RUN yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-RUN yum install -y nodejs npm --enablerepo=epel
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV FFMPEG_VERSION=4.4
 
-WORKDIR /usr/local/src
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    curl \
+    pkg-config \
+    yasm \
+    nasm \
+    libx264-dev \
+    libx265-dev \
+    libvpx-dev \
+    libfdk-aac-dev \
+    libmp3lame-dev \
+    libopus-dev \
+    libvorbis-dev \
+    libass-dev \
+    libfreetype6-dev \
+    libfontconfig1-dev \
+    libsdl2-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Custom Builds go here
+# Install Node.js 18.x
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Install FFmpeg
+RUN cd /tmp \
+    && wget https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2 \
+    && tar xjf ffmpeg-${FFMPEG_VERSION}.tar.bz2 \
+    && cd ffmpeg-${FFMPEG_VERSION} \
+    && ./configure \
+        --prefix=/usr \
+        --enable-gpl \
+        --enable-libfdk-aac \
+        --enable-libfreetype \
+        --enable-libmp3lame \
+        --enable-libopus \
+        --enable-libvorbis \
+        --enable-libvpx \
+        --enable-libx264 \
+        --enable-libx265 \
+        --enable-nonfree \
+        --enable-shared \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig \
+    && cd / \
+    && rm -rf /tmp/ffmpeg-${FFMPEG_VERSION}*
+
+# Install fluent-ffmpeg globally
 RUN npm install -g fluent-ffmpeg
 
-# Remove all tmpfile and cleanup
-# =================================
-WORKDIR /usr/local/
-RUN rm -rf /usr/local/src
-RUN yum clean all
-RUN rm -rf /var/cache/yum
-
-# =================================
-
-# Setup a working directory to allow for
-# docker run --rm -ti -v ${PWD}:/work ...
-# =======================================
-WORKDIR /work
-
-# Make sure Node.js is installed
-RUN           node -v
-RUN           npm -v
-
-#Create app dir
-RUN mkdir -p /usr/src/app
+# Create app directory
 WORKDIR /usr/src/app
 
-#Install Dependencies
+# Install app dependencies
 COPY package.json /usr/src/app
 RUN npm install
 
-#Bundle app source
+# Bundle app source
 COPY . /usr/src/app
 
+# Create uploads directory
+RUN mkdir -p /usr/src/app/uploads
+
 EXPOSE 3000
-ENTRYPOINT []
 CMD [ "node", "app.js" ]
