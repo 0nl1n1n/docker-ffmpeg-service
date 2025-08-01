@@ -138,14 +138,16 @@ function processFiles(files, ffmpegParams, res, winston) {
                 ffmpeg(file.savedFile)
                     .renice(15)
                     .outputOptions([
-                        '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black`,
+                        '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,setpts=PTS-STARTPTS`,
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
                         '-crf', '23',
                         '-c:a', 'aac',
                         '-b:a', '128k',
                         '-r', targetFps.toString(),
-                        '-g', '60'
+                        '-g', '60',
+                        '-af', 'aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS',
+                        '-vsync', 'cfr'
                     ])
                     .on('error', function(err) {
                         processingError = true;
@@ -167,7 +169,11 @@ function processFiles(files, ffmpegParams, res, winston) {
                                 .input(fileListPath)
                                 .inputOptions(['-f', 'concat', '-safe', '0'])
                                 .renice(15)
-                                .outputOptions(ffmpegParams.outputOptions)
+                                .outputOptions([
+                                    ...ffmpegParams.outputOptions,
+                                    '-avoid_negative_ts', 'make_zero',
+                                    '-fflags', '+genpts'
+                                ])
                                 .on('error', function(err) {
                                     winston.error(JSON.stringify({
                                         type: 'ffmpeg_concat',
@@ -309,7 +315,7 @@ function processFiles(files, ffmpegParams, res, winston) {
                     // Create blurred background
                     '[blur]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,boxblur=20:20[blurred]',
                     // Scale video to fit, maintaining aspect ratio
-                    '[vid]scale=w=1920:h=1080:force_original_aspect_ratio=decrease[scaled]',
+                    '[vid]scale=w=1920:h=1080:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS[scaled]',
                     // Overlay scaled video on blurred background
                     '[blurred][scaled]overlay=(W-w)/2:(H-h)/2[out]'
                 ])
@@ -322,7 +328,9 @@ function processFiles(files, ffmpegParams, res, winston) {
                     '-c:a', 'aac',
                     '-b:a', '128k',
                     '-r', '30',
-                    '-g', '60'
+                    '-g', '60',
+                    '-af', 'aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS',
+                    '-vsync', 'cfr'
                 ])
                 .on('error', function(err) {
                     processingError = true;
@@ -341,7 +349,11 @@ function processFiles(files, ffmpegParams, res, winston) {
                             .input(fileListPath)
                             .inputOptions(['-f', 'concat', '-safe', '0'])
                             .renice(15)
-                            .outputOptions(ffmpegParams.outputOptions)
+                            .outputOptions([
+                                ...ffmpegParams.outputOptions,
+                                '-avoid_negative_ts', 'make_zero',
+                                '-fflags', '+genpts'
+                            ])
                             .on('error', function(err) {
                                 winston.error(JSON.stringify({
                                     type: 'ffmpeg_concat',

@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Recent Updates (2025-08-01)
+
+### Fixed Audio Sync Issue in Video Compilation
+- **Problem**: Audio drift in `/compilation-simple/url` endpoint when concatenating multiple videos
+- **Cause**: Timestamp misalignment during video preprocessing and concatenation
+- **Solution**: Added timestamp synchronization using:
+  - `setpts=PTS-STARTPTS` filter for video streams
+  - `asetpts=PTS-STARTPTS` and `aresample=async=1:first_pts=0` for audio streams
+  - `-vsync cfr` for constant frame rate
+  - `-avoid_negative_ts make_zero` and `-fflags +genpts` for concat operation
+
 ## High-Level Architecture
 
 This is a Node.js/Express web service that provides FFmpeg conversion capabilities through HTTP endpoints. The service processes media files using FFmpeg and fluent-ffmpeg libraries, supporting both file uploads and URL inputs.
