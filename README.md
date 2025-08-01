@@ -28,6 +28,8 @@ All endpoints support file uploads via multipart/form-data:
 - `POST /audio-image-mp4` - Mix audio + image → MP4 video
 - `POST /audio-duration` - Get audio file duration
 - `POST /audio-mix` - Mix background music + vocals with effects
+- `POST /compilation` - Combine multiple videos into one compilation with blur effect for vertical videos
+- `POST /compilation-simple` - Combine multiple videos maintaining first video's dimensions
 
 ### URL Input Endpoints
 
@@ -43,6 +45,8 @@ All endpoints also support URL inputs via JSON POST requests:
 #### Multi-File Endpoints
 - `POST /audio-image-mp4/url` - Mix audio URL + image URL → MP4
 - `POST /audio-mix/url` - Mix background URL + vocals URL with effects
+- `POST /compilation/url` - Combine multiple video URLs into compilation with blur
+- `POST /compilation-simple/url` - Combine multiple video URLs maintaining dimensions
 
 ## Usage Examples
 
@@ -79,6 +83,23 @@ curl -X POST \
   -F "background=@background.mp3" \
   -F "vocals=@vocals.mp3" \
   http://localhost:3000/audio-mix
+```
+
+#### Video Compilation
+```bash
+# Create compilation with blur effect (16:9 output)
+curl -X POST \
+  -F "video1=@video1.mp4" \
+  -F "video2=@video2.mp4" \
+  -F "video3=@video3.mp4" \
+  http://localhost:3000/compilation
+
+# Create simple compilation (maintains first video dimensions)
+curl -X POST \
+  -F "video1=@video1.mp4" \
+  -F "video2=@video2.mp4" \
+  -F "video3=@video3.mp4" \
+  http://localhost:3000/compilation-simple
 ```
 
 ### URL Input Examples
@@ -131,6 +152,33 @@ curl -X POST \
   http://localhost:3000/audio-mix/url
 ```
 
+#### Video Compilation from URLs
+```bash
+# Create compilation with blur effect
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "videos": [
+      "https://example.com/video1.mp4",
+      "https://example.com/video2.mp4",
+      "https://example.com/video3.mp4"
+    ]
+  }' \
+  http://localhost:3000/compilation/url
+
+# Create simple compilation (maintains first video dimensions)
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "videos": [
+      "https://example.com/video1.mp4",
+      "https://example.com/video2.mp4",
+      "https://example.com/video3.mp4"
+    ]
+  }' \
+  http://localhost:3000/compilation-simple/url
+```
+
 ## Audio Mixing Features
 
 The audio-mix endpoint provides advanced audio processing:
@@ -139,6 +187,28 @@ The audio-mix endpoint provides advanced audio processing:
 - **Vocals**: Delayed by 10 seconds to allow background to establish
 - **Mixing**: Both tracks mixed together with dropout transition
 - **Fade Out**: 15-second fade-out starting exactly when vocals end (10s delay + vocal duration)
+
+## Video Compilation Features
+
+### Compilation (with blur effect)
+The compilation endpoint creates professional-looking video compilations:
+
+- **Multiple Videos**: Combine 2 or more videos into a single compilation
+- **Vertical Video Support**: Automatically handles vertical videos with blur effect
+- **Aspect Ratio**: Outputs 16:9 format with vertical videos centered
+- **Blur Background**: Creates aesthetic blur effect from the video content for borders
+- **Sequential Playback**: Videos play one after another in the order provided
+- **Audio Preservation**: Maintains audio from all source videos
+
+### Compilation Simple (no blur)
+The compilation-simple endpoint creates basic compilations:
+
+- **Multiple Videos**: Combine 2 or more videos into a single compilation
+- **First Video Dimensions**: Output maintains the exact dimensions of the first video
+- **Scaling**: Other videos are scaled to fit with black padding if needed
+- **No Blur Effect**: Clean, simple concatenation without effects
+- **Sequential Playback**: Videos play one after another in the order provided
+- **Audio Preservation**: Maintains audio from all source videos
 
 ## Deployment
 

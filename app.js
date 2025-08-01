@@ -65,6 +65,364 @@ function processFiles(files, ffmpegParams, res, winston) {
         to: outputFile,
     }));
     
+    // Handle simple compilation processing (no blur, maintain first video dimensions)
+    if (ffmpegParams.isCompilationSimple) {
+        winston.info(JSON.stringify({
+            action: 'begin simple compilation',
+            videos: uploadedFiles.length,
+            to: outputFile,
+        }));
+        
+        if (uploadedFiles.length < 2) {
+            let err = JSON.stringify({
+                type: 'input_error',
+                message: 'Compilation requires at least 2 videos',
+                received: uploadedFiles.length
+            });
+            winston.error(err);
+            // Clean up uploaded files
+            uploadedFiles.forEach(file => {
+                if (fs.existsSync(file.savedFile)) {
+                    fs.unlinkSync(file.savedFile);
+                }
+            });
+            res.writeHead(400, {'Connection': 'close'});
+            res.end(err);
+            return;
+        }
+        
+        // Get dimensions from first video
+        ffmpeg.ffprobe(uploadedFiles[0].savedFile, function(err, metadata) {
+            if (err) {
+                winston.error(JSON.stringify({
+                    type: 'ffprobe_error',
+                    message: err,
+                }));
+                // Clean up uploaded files
+                uploadedFiles.forEach(file => {
+                    if (fs.existsSync(file.savedFile)) {
+                        fs.unlinkSync(file.savedFile);
+                    }
+                });
+                res.writeHead(500, {'Connection': 'close'});
+                res.end(JSON.stringify({error: 'Failed to get video dimensions'}));
+                return;
+            }
+            
+            let videoStream = metadata.streams.find(s => s.codec_type === 'video');
+            let targetWidth = videoStream.width;
+            let targetHeight = videoStream.height;
+            let targetFps = eval(videoStream.r_frame_rate) || 30;
+            
+            winston.info(JSON.stringify({
+                action: 'detected first video dimensions',
+                width: targetWidth,
+                height: targetHeight,
+                fps: targetFps,
+            }));
+            
+            // Create a temporary file list for concat
+            let fileListPath = uniqueFilename(__dirname + '/uploads/') + '.txt';
+            let fileListContent = '';
+            
+            // Process each video to match first video's dimensions
+            let processedCount = 0;
+            let processingError = false;
+            let tempFiles = [];
+            
+            uploadedFiles.forEach((file, index) => {
+                let tempProcessed = uniqueFilename(__dirname + '/uploads/') + '_processed.mp4';
+                tempFiles.push(tempProcessed);
+                fileListContent += `file '${tempProcessed}'\n`;
+                
+                ffmpeg(file.savedFile)
+                    .renice(15)
+                    .outputOptions([
+                        '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black`,
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-b:a', '128k',
+                        '-r', targetFps.toString(),
+                        '-g', '60'
+                    ])
+                    .on('error', function(err) {
+                        processingError = true;
+                        winston.error(JSON.stringify({
+                            type: 'ffmpeg_processing',
+                            message: err.message || err,
+                            file: file.filename
+                        }));
+                    })
+                    .on('end', function() {
+                        processedCount++;
+                        
+                        // When all videos are processed, concatenate them
+                        if (processedCount === uploadedFiles.length && !processingError) {
+                            // Write file list
+                            fs.writeFileSync(fileListPath, fileListContent);
+                            
+                            ffmpeg()
+                                .input(fileListPath)
+                                .inputOptions(['-f', 'concat', '-safe', '0'])
+                                .renice(15)
+                                .outputOptions(ffmpegParams.outputOptions)
+                                .on('error', function(err) {
+                                    winston.error(JSON.stringify({
+                                        type: 'ffmpeg_concat',
+                                        message: err.message || err
+                                    }));
+                                    // Clean up all files
+                                    uploadedFiles.forEach(file => {
+                                        if (fs.existsSync(file.savedFile)) {
+                                            fs.unlinkSync(file.savedFile);
+                                        }
+                                    });
+                                    if (fs.existsSync(fileListPath)) {
+                                        fs.unlinkSync(fileListPath);
+                                    }
+                                    tempFiles.forEach(tempFile => {
+                                        if (fs.existsSync(tempFile)) {
+                                            fs.unlinkSync(tempFile);
+                                        }
+                                    });
+                                    res.writeHead(500, {'Connection': 'close'});
+                                    res.end(JSON.stringify({error: 'Concatenation failed'}));
+                                })
+                                .on('end', function() {
+                                    // Clean up all temporary files
+                                    uploadedFiles.forEach(file => {
+                                        if (fs.existsSync(file.savedFile)) {
+                                            fs.unlinkSync(file.savedFile);
+                                        }
+                                    });
+                                    if (fs.existsSync(fileListPath)) {
+                                        fs.unlinkSync(fileListPath);
+                                    }
+                                    tempFiles.forEach(tempFile => {
+                                        if (fs.existsSync(tempFile)) {
+                                            fs.unlinkSync(tempFile);
+                                        }
+                                    });
+                                    
+                                    winston.info(JSON.stringify({
+                                        action: 'starting download to client',
+                                        file: outputFile,
+                                    }));
+
+                                    res.download(outputFile, null, function(err) {
+                                        if (err) {
+                                            winston.error(JSON.stringify({
+                                                type: 'download',
+                                                message: err,
+                                            }));
+                                        }
+                                        winston.info(JSON.stringify({
+                                            action: 'deleting',
+                                            file: outputFile,
+                                        }));
+                                        if (fs.existsSync(outputFile)) {
+                                            fs.unlinkSync(outputFile);
+                                            winston.info(JSON.stringify({
+                                                action: 'deleted',
+                                                file: outputFile,
+                                            }));
+                                        }
+                                    });
+                                })
+                                .save(outputFile);
+                        }
+                    })
+                    .save(tempProcessed);
+            });
+        });
+        return;
+    }
+    
+    // Handle compilation processing
+    if (ffmpegParams.isCompilation) {
+        winston.info(JSON.stringify({
+            action: 'begin compilation',
+            videos: uploadedFiles.length,
+            to: outputFile,
+        }));
+        
+        if (uploadedFiles.length < 2) {
+            let err = JSON.stringify({
+                type: 'input_error',
+                message: 'Compilation requires at least 2 videos',
+                received: uploadedFiles.length
+            });
+            winston.error(err);
+            // Clean up uploaded files
+            uploadedFiles.forEach(file => {
+                if (fs.existsSync(file.savedFile)) {
+                    fs.unlinkSync(file.savedFile);
+                }
+            });
+            res.writeHead(400, {'Connection': 'close'});
+            res.end(err);
+            return;
+        }
+        
+        // Create a temporary file list for concat
+        let fileListPath = uniqueFilename(__dirname + '/uploads/') + '.txt';
+        let fileListContent = '';
+        let complexFilter = [];
+        let filterInputs = [];
+        
+        // Process each video to create the blur effect for vertical videos
+        uploadedFiles.forEach((file, index) => {
+            let tempProcessed = uniqueFilename(__dirname + '/uploads/') + '_processed.mp4';
+            fileListContent += `file '${tempProcessed}'\n`;
+            
+            // Create filter for each video with blur background
+            complexFilter.push(
+                // Split the input into two streams
+                `[${index}:v]split=2[blur${index}][vid${index}]`,
+                // Create blurred background
+                `[blur${index}]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,boxblur=20:20[blurred${index}]`,
+                // Scale video to fit height, maintaining aspect ratio
+                `[vid${index}]scale=w=1920:h=1080:force_original_aspect_ratio=decrease[scaled${index}]`,
+                // Overlay scaled video on blurred background
+                `[blurred${index}][scaled${index}]overlay=(W-w)/2:(H-h)/2[v${index}]`
+            );
+            filterInputs.push(`[v${index}]`);
+        });
+        
+        // Write file list
+        fs.writeFileSync(fileListPath, fileListContent);
+        
+        // First pass: process each video with blur effect
+        let processedCount = 0;
+        let processingError = false;
+        
+        uploadedFiles.forEach((file, index) => {
+            let tempProcessed = uniqueFilename(__dirname + '/uploads/') + '_processed.mp4';
+            
+            ffmpeg(file.savedFile)
+                .renice(15)
+                .complexFilter([
+                    // Split the input into two streams
+                    '[0:v]split=2[blur][vid]',
+                    // Create blurred background
+                    '[blur]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,boxblur=20:20[blurred]',
+                    // Scale video to fit, maintaining aspect ratio
+                    '[vid]scale=w=1920:h=1080:force_original_aspect_ratio=decrease[scaled]',
+                    // Overlay scaled video on blurred background
+                    '[blurred][scaled]overlay=(W-w)/2:(H-h)/2[out]'
+                ])
+                .outputOptions([
+                    '-map', '[out]',
+                    '-map', '0:a?',
+                    '-c:v', 'libx264',
+                    '-preset', 'ultrafast',
+                    '-crf', '23',
+                    '-c:a', 'aac',
+                    '-b:a', '128k',
+                    '-r', '30',
+                    '-g', '60'
+                ])
+                .on('error', function(err) {
+                    processingError = true;
+                    winston.error(JSON.stringify({
+                        type: 'ffmpeg_processing',
+                        message: err.message || err,
+                        file: file.filename
+                    }));
+                })
+                .on('end', function() {
+                    processedCount++;
+                    
+                    // When all videos are processed, concatenate them
+                    if (processedCount === uploadedFiles.length && !processingError) {
+                        ffmpeg()
+                            .input(fileListPath)
+                            .inputOptions(['-f', 'concat', '-safe', '0'])
+                            .renice(15)
+                            .outputOptions(ffmpegParams.outputOptions)
+                            .on('error', function(err) {
+                                winston.error(JSON.stringify({
+                                    type: 'ffmpeg_concat',
+                                    message: err.message || err
+                                }));
+                                // Clean up all files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                if (fs.existsSync(fileListPath)) {
+                                    fs.unlinkSync(fileListPath);
+                                }
+                                // Clean up processed files
+                                let processedFiles = fileListContent.match(/file '([^']+)'/g);
+                                if (processedFiles) {
+                                    processedFiles.forEach(match => {
+                                        let filePath = match.match(/file '([^']+)'/)[1];
+                                        if (fs.existsSync(filePath)) {
+                                            fs.unlinkSync(filePath);
+                                        }
+                                    });
+                                }
+                                res.writeHead(500, {'Connection': 'close'});
+                                res.end(JSON.stringify({error: 'Concatenation failed'}));
+                            })
+                            .on('end', function() {
+                                // Clean up all temporary files
+                                uploadedFiles.forEach(file => {
+                                    if (fs.existsSync(file.savedFile)) {
+                                        fs.unlinkSync(file.savedFile);
+                                    }
+                                });
+                                if (fs.existsSync(fileListPath)) {
+                                    fs.unlinkSync(fileListPath);
+                                }
+                                // Clean up processed files
+                                let processedFiles = fileListContent.match(/file '([^']+)'/g);
+                                if (processedFiles) {
+                                    processedFiles.forEach(match => {
+                                        let filePath = match.match(/file '([^']+)'/)[1];
+                                        if (fs.existsSync(filePath)) {
+                                            fs.unlinkSync(filePath);
+                                        }
+                                    });
+                                }
+                                
+                                winston.info(JSON.stringify({
+                                    action: 'starting download to client',
+                                    file: outputFile,
+                                }));
+
+                                res.download(outputFile, null, function(err) {
+                                    if (err) {
+                                        winston.error(JSON.stringify({
+                                            type: 'download',
+                                            message: err,
+                                        }));
+                                    }
+                                    winston.info(JSON.stringify({
+                                        action: 'deleting',
+                                        file: outputFile,
+                                    }));
+                                    if (fs.existsSync(outputFile)) {
+                                        fs.unlinkSync(outputFile);
+                                        winston.info(JSON.stringify({
+                                            action: 'deleted',
+                                            file: outputFile,
+                                        }));
+                                    }
+                                });
+                            })
+                            .save(outputFile);
+                    }
+                })
+                .save(tempProcessed);
+        });
+        return;
+    }
+    
     // Handle multi-file processing (audio-image-mp4, audio-mix)
     if (ffmpegParams.multiFile && uploadedFiles.length >= 2) {
         let audioFile = null;
@@ -397,6 +755,8 @@ for (let prop in endpoints.types) {
             // Check if this endpoint requires multiple files
             if (ffmpegParams.multiFile && ffmpegParams.requires) {
                 expectedFiles = ffmpegParams.requires.length;
+            } else if (ffmpegParams.isCompilation || ffmpegParams.isCompilationSimple) {
+                expectedFiles = 100; // Allow up to 100 videos for compilation
             }
             
             let busboy = new Busboy({
@@ -491,7 +851,32 @@ for (let prop in endpoints.types) {
                 let inputUrls = [];
                 
                 // Handle different URL input formats
-                if (ffmpegParams.multiFile && ffmpegParams.requires) {
+                if (ffmpegParams.isCompilation || ffmpegParams.isCompilationSimple) {
+                    // Compilation endpoints - expect array of video URLs
+                    if (req.body.videos && Array.isArray(req.body.videos)) {
+                        req.body.videos.forEach((videoUrl, index) => {
+                            inputUrls.push({
+                                fieldname: 'video' + index,
+                                url: videoUrl,
+                                filename: 'video' + index + '.mp4'
+                            });
+                        });
+                        
+                        if (inputUrls.length < 2) {
+                            res.status(400).json({
+                                error: 'Compilation requires at least 2 video URLs',
+                                example: { videos: ['https://example.com/video1.mp4', 'https://example.com/video2.mp4'] }
+                            });
+                            return;
+                        }
+                    } else {
+                        res.status(400).json({
+                            error: 'Missing videos array parameter',
+                            example: { videos: ['https://example.com/video1.mp4', 'https://example.com/video2.mp4'] }
+                        });
+                        return;
+                    }
+                } else if (ffmpegParams.multiFile && ffmpegParams.requires) {
                     // Multi-file endpoints
                     ffmpegParams.requires.forEach(requiredField => {
                         if (req.body[requiredField]) {
