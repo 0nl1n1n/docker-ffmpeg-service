@@ -105,46 +105,95 @@ function processFiles(files, ffmpegParams, res, winston) {
         let processedCount = 0;
         let hasError = false;
         
-        uploadedFiles.forEach((file, index) => {
-            // Get both raw duration and start time to calculate adjusted duration
-            ffmpeg.ffprobe(file.savedFile, function(err, metadata) {
-                processedCount++;
-                
-                if (err) {
-                    winston.error(JSON.stringify({
-                        type: 'ffprobe_error',
-                        message: err.message || err,
-                        file: file.filename
-                    }));
-                    hasError = true;
-                } else {
-                    let rawDuration = parseFloat(metadata.format.duration);
-                    let startTime = parseFloat(metadata.format.start_time) || 0;
-                    
-                    // Adjust duration by removing negative start time (same effect as -avoid_negative_ts make_zero)
-                    let adjustedDuration = rawDuration - Math.abs(startTime);
-                    
-                    // Store timestamp with title at the correct index
-                    timestamps[index] = {
-                        title: file.title || `Video ${index + 1}`,
-                        timestamp: formatTime(cumulativeTime),
-                        duration: formatTime(adjustedDuration)
-                    };
-                    
-                    cumulativeTime += adjustedDuration;
-                    
-                    winston.info(JSON.stringify({
-                        action: 'duration_calculated',
-                        file: file.filename,
-                        raw_duration: rawDuration,
-                        start_time: startTime,
-                        adjusted_duration: adjustedDuration
-                    }));
+        // Get target FPS from first video for accurate duration calculation
+        ffmpeg.ffprobe(uploadedFiles[0].savedFile, function(err, firstMetadata) {
+            if (err) {
+                winston.error(JSON.stringify({
+                    type: 'ffprobe_error_first_video',
+                    message: err.message || err
+                }));
+                hasError = true;
+                finishProcessing();
+                return;
+            }
+            
+            // Extract target fps from first video's stream
+            let targetFps = 30; // Default
+            if (firstMetadata.streams && firstMetadata.streams.length > 0) {
+                for (let stream of firstMetadata.streams) {
+                    if (stream.codec_type === 'video' && stream.r_frame_rate) {
+                        let parts = stream.r_frame_rate.split('/');
+                        if (parts.length === 2) {
+                            targetFps = parseInt(parts[0]) / parseInt(parts[1]);
+                            break;
+                        }
+                    }
                 }
-                
-                if (processedCount === uploadedFiles.length) {
-                    finishProcessing();
-                }
+            }
+            
+            uploadedFiles.forEach((file, index) => {
+                ffmpeg.ffprobe(file.savedFile, function(err, metadata) {
+                    processedCount++;
+                    
+                    if (err) {
+                        winston.error(JSON.stringify({
+                            type: 'ffprobe_error',
+                            message: err.message || err,
+                            file: file.filename
+                        }));
+                        hasError = true;
+                    } else {
+                        let rawDuration = parseFloat(metadata.format.duration);
+                        
+                        // Find video stream to get frame count and fps
+                        let videoStream = null;
+                        if (metadata.streams) {
+                            for (let stream of metadata.streams) {
+                                if (stream.codec_type === 'video') {
+                                    videoStream = stream;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        let adjustedDuration = rawDuration;
+                        
+                        // If video has different fps, calculate duration after fps conversion
+                        if (videoStream && videoStream.nb_frames && videoStream.r_frame_rate) {
+                            let originalFpsParts = videoStream.r_frame_rate.split('/');
+                            if (originalFpsParts.length === 2) {
+                                let originalFps = parseInt(originalFpsParts[0]) / parseInt(originalFpsParts[1]);
+                                let frameCount = parseInt(videoStream.nb_frames);
+                                
+                                // Duration after fps conversion: frame_count / target_fps
+                                adjustedDuration = frameCount / targetFps;
+                                
+                                winston.info(JSON.stringify({
+                                    action: 'fps_adjustment',
+                                    file: file.filename,
+                                    original_fps: originalFps,
+                                    target_fps: targetFps,
+                                    frame_count: frameCount,
+                                    original_duration: rawDuration,
+                                    adjusted_duration: adjustedDuration
+                                }));
+                            }
+                        }
+                        
+                        // Store timestamp with title at the correct index
+                        timestamps[index] = {
+                            title: file.title || `Video ${index + 1}`,
+                            timestamp: formatTime(cumulativeTime),
+                            duration: formatTime(adjustedDuration)
+                        };
+                        
+                        cumulativeTime += adjustedDuration;
+                    }
+                    
+                    if (processedCount === uploadedFiles.length) {
+                        finishProcessing();
+                    }
+                });
             });
         });
         
