@@ -46,8 +46,7 @@ All endpoints also support URL inputs via JSON POST requests:
 - `POST /audio-image-mp4/url` - Mix audio URL + image URL → MP4
 - `POST /audio-mix/url` - Mix background URL + vocals URL with effects
 - `POST /compilation/url` - Combine multiple video URLs into compilation with blur
-- `POST /compilation-simple/url` - Combine multiple video URLs maintaining dimensions
-- `POST /compilation-timestamps/url` - Calculate timestamps for videos in a compilation
+- `POST /compilation-simple/url` - Combine multiple video URLs maintaining dimensions, returns video with timestamps
 
 ## Usage Examples
 
@@ -167,7 +166,30 @@ curl -X POST \
   }' \
   http://localhost:3000/compilation/url
 
-# Create simple compilation (maintains first video dimensions)
+# Create simple compilation with timestamps (maintains first video dimensions)
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "videos": [
+      {"url": "https://example.com/video1.mp4", "title": "Introduction"},
+      {"url": "https://example.com/video2.mp4", "title": "Main Content"},
+      {"url": "https://example.com/video3.mp4", "title": "Conclusion"}
+    ]
+  }' \
+  http://localhost:3000/compilation-simple/url
+
+# Response includes both video URL and timestamps:
+# {
+#   "video_url": "/download/output_123456.mp4",
+#   "timestamps": [
+#     {"title": "Introduction", "timestamp": "00:00", "duration": "01:23"},
+#     {"title": "Main Content", "timestamp": "01:23", "duration": "05:47"},
+#     {"title": "Conclusion", "timestamp": "07:10", "duration": "02:15"}
+#   ],
+#   "total_duration": "09:25"
+# }
+
+# You can also use simple URL strings (titles will be auto-generated):
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,18 +200,6 @@ curl -X POST \
     ]
   }' \
   http://localhost:3000/compilation-simple/url
-
-# Get timestamps for video compilation
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -d '{
-    "videos": [
-      {"url": "https://example.com/video1.mp4", "title": "Introduction"},
-      {"url": "https://example.com/video2.mp4", "title": "Main Content"},
-      {"url": "https://example.com/video3.mp4", "title": "Conclusion"}
-    ]
-  }' \
-  http://localhost:3000/compilation-timestamps/url
 ```
 
 ## Audio Mixing Features
@@ -213,8 +223,8 @@ The compilation endpoint creates professional-looking video compilations:
 - **Sequential Playback**: Videos play one after another in the order provided
 - **Audio Preservation**: Maintains audio from all source videos
 
-### Compilation Simple (no blur)
-The compilation-simple endpoint creates basic compilations:
+### Compilation Simple (no blur, with timestamps)
+The compilation-simple endpoint creates basic compilations with calculated timestamps:
 
 - **Multiple Videos**: Combine 2 or more videos into a single compilation
 - **First Video Dimensions**: Output maintains the exact dimensions of the first video
@@ -222,6 +232,10 @@ The compilation-simple endpoint creates basic compilations:
 - **No Blur Effect**: Clean, simple concatenation without effects
 - **Sequential Playback**: Videos play one after another in the order provided
 - **Audio Preservation**: Maintains audio from all source videos
+- **Timestamp Calculation**: Returns accurate timestamps for each video segment after processing
+- **Title Support**: Optionally provide titles for each video segment
+- **FPS Conversion**: Accurately calculates durations after frame rate conversion
+- **Response Format**: Returns JSON with video download URL and timestamp data
 
 ### Compilation Timestamps
 The compilation-timestamps endpoint calculates video timestamps:

@@ -4,6 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Recent Updates
 
+### Merged Compilation and Timestamps Endpoints (2025-08-21)
+- **Merged**: `/compilation-simple/url` now returns both video and timestamps
+- **Features**:
+  - Accepts videos with optional titles: `{url: "...", title: "..."}`
+  - Calculates accurate timestamps after fps conversion
+  - Returns JSON response with video download URL and timestamp data
+  - Video is temporarily stored and downloadable via `/download/:id` endpoint
+- **Note**: The separate `/compilation-timestamps/url` endpoint is now deprecated
+
 ### Added Video Order Preservation (2025-08-20)
 - **Problem**: Videos in compilation endpoints were being processed out of order due to asynchronous downloads
 - **Solution**: Pre-allocate downloadedFiles array and store files at their original index positions to maintain order

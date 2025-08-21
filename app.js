@@ -11,6 +11,7 @@ const winston = require('winston');
 const https = require('https');
 const http = require('http');
 const url = require('url');
+const path = require('path');
 
 app.use(compression());
 app.use(express.json({ limit: '50mb' }));
@@ -180,12 +181,15 @@ function processFiles(files, ffmpegParams, res, winston) {
                             }
                         }
                         
-                        // Store timestamp with title at the correct index
+                        // Store timestamp with title and username at the correct index
                         timestamps[index] = {
                             title: file.title || `Video ${index + 1}`,
                             timestamp: formatTime(cumulativeTime),
                             duration: formatTime(adjustedDuration)
                         };
+                        if (file.username) {
+                            timestamps[index].username = file.username;
+                        }
                         
                         cumulativeTime += adjustedDuration;
                     }
@@ -245,7 +249,7 @@ function processFiles(files, ffmpegParams, res, winston) {
     // Handle simple compilation processing (no blur, maintain first video dimensions)
     if (ffmpegParams.isCompilationSimple) {
         winston.info(JSON.stringify({
-            action: 'begin simple compilation',
+            action: 'begin simple compilation with timestamps',
             videos: uploadedFiles.length,
             to: outputFile,
         }));
@@ -268,7 +272,11 @@ function processFiles(files, ffmpegParams, res, winston) {
             return;
         }
         
-        // Get dimensions from first video
+        // Arrays to store timestamps data
+        let timestamps = new Array(uploadedFiles.length);
+        let processedDurations = new Array(uploadedFiles.length);
+        
+        // Get dimensions from first video and analyze all videos
         ffmpeg.ffprobe(uploadedFiles[0].savedFile, function(err, metadata) {
             if (err) {
                 winston.error(JSON.stringify({
@@ -306,118 +314,239 @@ function processFiles(files, ffmpegParams, res, winston) {
             let processedCount = 0;
             let processingError = false;
             let tempFiles = [];
+            let probeCount = 0;
             
+            // First, probe all videos to get their durations after fps conversion
             uploadedFiles.forEach((file, index) => {
-                let tempProcessed = uniqueFilename(__dirname + '/uploads/') + '_processed.mp4';
-                tempFiles.push(tempProcessed);
-                fileListContent += `file '${tempProcessed}'\n`;
-                
-                ffmpeg(file.savedFile)
-                    .renice(15)
-                    .outputOptions([
-                        '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,setpts=PTS-STARTPTS`,
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-crf', '23',
-                        '-c:a', 'aac',
-                        '-b:a', '128k',
-                        '-r', targetFps.toString(),
-                        '-g', '60',
-                        '-af', 'aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS',
-                        '-vsync', 'cfr'
-                    ])
-                    .on('error', function(err) {
+                ffmpeg.ffprobe(file.savedFile, function(err, videoMetadata) {
+                    probeCount++;
+                    
+                    if (err) {
                         processingError = true;
                         winston.error(JSON.stringify({
-                            type: 'ffmpeg_processing',
+                            type: 'ffprobe_error',
                             message: err.message || err,
                             file: file.filename
                         }));
-                    })
-                    .on('end', function() {
-                        processedCount++;
+                    } else {
+                        let rawDuration = parseFloat(videoMetadata.format.duration);
                         
-                        // When all videos are processed, concatenate them
-                        if (processedCount === uploadedFiles.length && !processingError) {
-                            // Write file list
-                            fs.writeFileSync(fileListPath, fileListContent);
+                        // Find video stream to get frame count and fps
+                        let vidStream = null;
+                        if (videoMetadata.streams) {
+                            for (let stream of videoMetadata.streams) {
+                                if (stream.codec_type === 'video') {
+                                    vidStream = stream;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        let adjustedDuration = rawDuration;
+                        
+                        // If video has different fps, calculate duration after fps conversion
+                        if (vidStream && vidStream.nb_frames && vidStream.r_frame_rate) {
+                            let originalFpsParts = vidStream.r_frame_rate.split('/');
+                            if (originalFpsParts.length === 2) {
+                                let originalFps = parseInt(originalFpsParts[0]) / parseInt(originalFpsParts[1]);
+                                let frameCount = parseInt(vidStream.nb_frames);
+                                
+                                // Duration after fps conversion: frame_count / target_fps
+                                adjustedDuration = frameCount / targetFps;
+                                
+                                winston.info(JSON.stringify({
+                                    action: 'fps_adjustment_for_timestamps',
+                                    file: file.filename,
+                                    original_fps: originalFps,
+                                    target_fps: targetFps,
+                                    frame_count: frameCount,
+                                    original_duration: rawDuration,
+                                    adjusted_duration: adjustedDuration
+                                }));
+                            }
+                        }
+                        
+                        // Store adjusted duration for this video
+                        processedDurations[index] = adjustedDuration;
+                    }
+                    
+                    // When all probes are done, start processing videos
+                    if (probeCount === uploadedFiles.length) {
+                        if (processingError) {
+                            // Clean up and exit
+                            uploadedFiles.forEach(file => {
+                                if (fs.existsSync(file.savedFile)) {
+                                    fs.unlinkSync(file.savedFile);
+                                }
+                            });
+                            res.writeHead(500, {'Connection': 'close'});
+                            res.end(JSON.stringify({error: 'Failed to analyze videos'}));
+                            return;
+                        }
+                        
+                        // Now process each video
+                        uploadedFiles.forEach((file, idx) => {
+                            let tempProcessed = uniqueFilename(__dirname + '/uploads/') + '_processed.mp4';
+                            tempFiles.push(tempProcessed);
+                            fileListContent += `file '${tempProcessed}'\n`;
                             
-                            ffmpeg()
-                                .input(fileListPath)
-                                .inputOptions(['-f', 'concat', '-safe', '0'])
+                            ffmpeg(file.savedFile)
                                 .renice(15)
                                 .outputOptions([
-                                    ...ffmpegParams.outputOptions,
-                                    '-avoid_negative_ts', 'make_zero',
-                                    '-fflags', '+genpts'
+                                    '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black,setpts=PTS-STARTPTS`,
+                                    '-c:v', 'libx264',
+                                    '-preset', 'ultrafast',
+                                    '-crf', '23',
+                                    '-c:a', 'aac',
+                                    '-b:a', '128k',
+                                    '-r', targetFps.toString(),
+                                    '-g', '60',
+                                    '-af', 'aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS',
+                                    '-vsync', 'cfr'
                                 ])
                                 .on('error', function(err) {
+                                    processingError = true;
                                     winston.error(JSON.stringify({
-                                        type: 'ffmpeg_concat',
-                                        message: err.message || err
+                                        type: 'ffmpeg_processing',
+                                        message: err.message || err,
+                                        file: file.filename
                                     }));
-                                    // Clean up all files
-                                    uploadedFiles.forEach(file => {
-                                        if (fs.existsSync(file.savedFile)) {
-                                            fs.unlinkSync(file.savedFile);
-                                        }
-                                    });
-                                    if (fs.existsSync(fileListPath)) {
-                                        fs.unlinkSync(fileListPath);
-                                    }
-                                    tempFiles.forEach(tempFile => {
-                                        if (fs.existsSync(tempFile)) {
-                                            fs.unlinkSync(tempFile);
-                                        }
-                                    });
-                                    res.writeHead(500, {'Connection': 'close'});
-                                    res.end(JSON.stringify({error: 'Concatenation failed'}));
                                 })
                                 .on('end', function() {
-                                    // Clean up all temporary files
-                                    uploadedFiles.forEach(file => {
-                                        if (fs.existsSync(file.savedFile)) {
-                                            fs.unlinkSync(file.savedFile);
-                                        }
-                                    });
-                                    if (fs.existsSync(fileListPath)) {
-                                        fs.unlinkSync(fileListPath);
-                                    }
-                                    tempFiles.forEach(tempFile => {
-                                        if (fs.existsSync(tempFile)) {
-                                            fs.unlinkSync(tempFile);
-                                        }
-                                    });
+                                    processedCount++;
                                     
-                                    winston.info(JSON.stringify({
-                                        action: 'starting download to client',
-                                        file: outputFile,
-                                    }));
+                                    // When all videos are processed, concatenate them
+                                    if (processedCount === uploadedFiles.length && !processingError) {
+                                        // Calculate timestamps
+                                        let cumulativeTime = 0;
+                                        for (let i = 0; i < uploadedFiles.length; i++) {
+                                            timestamps[i] = {
+                                                title: uploadedFiles[i].title || `Video ${i + 1}`,
+                                                timestamp: formatTime(cumulativeTime),
+                                                duration: formatTime(processedDurations[i])
+                                            };
+                                            if (uploadedFiles[i].username) {
+                                                timestamps[i].username = uploadedFiles[i].username;
+                                            }
+                                            cumulativeTime += processedDurations[i];
+                                        }
+                                        
+                                        // Write file list
+                                        fs.writeFileSync(fileListPath, fileListContent);
+                                        
+                                        // Create timestamps JSON file
+                                        let timestampsPath = uniqueFilename(__dirname + '/uploads/') + '_timestamps.json';
+                                        let timestampsData = {
+                                            timestamps: timestamps,
+                                            total_duration: formatTime(cumulativeTime)
+                                        };
+                                        fs.writeFileSync(timestampsPath, JSON.stringify(timestampsData, null, 2));
+                                        
+                                        ffmpeg()
+                                            .input(fileListPath)
+                                            .inputOptions(['-f', 'concat', '-safe', '0'])
+                                            .renice(15)
+                                            .outputOptions([
+                                                ...ffmpegParams.outputOptions,
+                                                '-avoid_negative_ts', 'make_zero',
+                                                '-fflags', '+genpts'
+                                            ])
+                                            .on('error', function(err) {
+                                                winston.error(JSON.stringify({
+                                                    type: 'ffmpeg_concat',
+                                                    message: err.message || err
+                                                }));
+                                                // Clean up all files
+                                                uploadedFiles.forEach(file => {
+                                                    if (fs.existsSync(file.savedFile)) {
+                                                        fs.unlinkSync(file.savedFile);
+                                                    }
+                                                });
+                                                if (fs.existsSync(fileListPath)) {
+                                                    fs.unlinkSync(fileListPath);
+                                                }
+                                                if (fs.existsSync(timestampsPath)) {
+                                                    fs.unlinkSync(timestampsPath);
+                                                }
+                                                tempFiles.forEach(tempFile => {
+                                                    if (fs.existsSync(tempFile)) {
+                                                        fs.unlinkSync(tempFile);
+                                                    }
+                                                });
+                                                res.writeHead(500, {'Connection': 'close'});
+                                                res.end(JSON.stringify({error: 'Concatenation failed'}));
+                                            })
+                                            .on('end', function() {
+                                                // Clean up all temporary files except output
+                                                uploadedFiles.forEach(file => {
+                                                    if (fs.existsSync(file.savedFile)) {
+                                                        fs.unlinkSync(file.savedFile);
+                                                    }
+                                                });
+                                                if (fs.existsSync(fileListPath)) {
+                                                    fs.unlinkSync(fileListPath);
+                                                }
+                                                tempFiles.forEach(tempFile => {
+                                                    if (fs.existsSync(tempFile)) {
+                                                        fs.unlinkSync(tempFile);
+                                                    }
+                                                });
+                                                
+                                                winston.info(JSON.stringify({
+                                                    action: 'compilation complete, sending response',
+                                                    video: outputFile,
+                                                    timestamps: timestampsPath,
+                                                }));
 
-                                    res.download(outputFile, null, function(err) {
-                                        if (err) {
-                                            winston.error(JSON.stringify({
-                                                type: 'download',
-                                                message: err,
-                                            }));
-                                        }
-                                        winston.info(JSON.stringify({
-                                            action: 'deleting',
-                                            file: outputFile,
-                                        }));
-                                        if (fs.existsSync(outputFile)) {
-                                            fs.unlinkSync(outputFile);
-                                            winston.info(JSON.stringify({
-                                                action: 'deleted',
-                                                file: outputFile,
-                                            }));
-                                        }
-                                    });
+                                                // Read timestamps JSON
+                                                let timestampsJson = fs.readFileSync(timestampsPath, 'utf8');
+                                                
+                                                // Clean up timestamps file
+                                                if (fs.existsSync(timestampsPath)) {
+                                                    fs.unlinkSync(timestampsPath);
+                                                }
+                                                
+                                                // Send multipart response with video and timestamps
+                                                res.writeHead(200, {
+                                                    'Content-Type': 'application/json',
+                                                    'X-Video-File': path.basename(outputFile)
+                                                });
+                                                
+                                                // Create response with video download URL and timestamps
+                                                let response = {
+                                                    video_url: `/download/${path.basename(outputFile)}`,
+                                                    ...JSON.parse(timestampsJson)
+                                                };
+                                                
+                                                // Save video temporarily for download
+                                                let downloadId = path.basename(outputFile);
+                                                app.locals.tempVideos = app.locals.tempVideos || {};
+                                                app.locals.tempVideos[downloadId] = outputFile;
+                                                
+                                                // Clean up after 5 minutes
+                                                setTimeout(() => {
+                                                    if (app.locals.tempVideos[downloadId]) {
+                                                        let videoPath = app.locals.tempVideos[downloadId];
+                                                        delete app.locals.tempVideos[downloadId];
+                                                        if (fs.existsSync(videoPath)) {
+                                                            fs.unlinkSync(videoPath);
+                                                            winston.info(JSON.stringify({
+                                                                action: 'deleted temp video',
+                                                                file: videoPath,
+                                                            }));
+                                                        }
+                                                    }
+                                                }, 5 * 60 * 1000);
+                                                
+                                                res.end(JSON.stringify(response, null, 2));
+                                            })
+                                            .save(outputFile);
+                                    }
                                 })
-                                .save(outputFile);
-                        }
-                    })
-                    .save(tempProcessed);
+                                .save(tempProcessed);
+                        });
+                    }
+                });
             });
         });
         return;
@@ -1043,25 +1172,47 @@ for (let prop in endpoints.types) {
                 if (ffmpegParams.isCompilation || ffmpegParams.isCompilationSimple) {
                     // Compilation endpoints - expect array of video URLs
                     if (req.body.videos && Array.isArray(req.body.videos)) {
-                        req.body.videos.forEach((videoUrl, index) => {
-                            inputUrls.push({
-                                fieldname: 'video' + index,
-                                url: videoUrl,
-                                filename: 'video' + index + '.mp4'
-                            });
+                        req.body.videos.forEach((video, index) => {
+                            // Support both string URLs and objects with url, title, and username
+                            if (typeof video === 'object' && video.url) {
+                                inputUrls.push({
+                                    fieldname: 'video' + index,
+                                    url: video.url,
+                                    title: video.title || `Video ${index + 1}`,
+                                    username: video.username,
+                                    filename: 'video' + index + '.mp4'
+                                });
+                            } else if (typeof video === 'string') {
+                                inputUrls.push({
+                                    fieldname: 'video' + index,
+                                    url: video,
+                                    title: `Video ${index + 1}`,
+                                    filename: 'video' + index + '.mp4'
+                                });
+                            }
                         });
                         
                         if (inputUrls.length < 2) {
                             res.status(400).json({
                                 error: 'Compilation requires at least 2 video URLs',
-                                example: { videos: ['https://example.com/video1.mp4', 'https://example.com/video2.mp4'] }
+                                example: { 
+                                    videos: [
+                                        { url: 'https://example.com/video1.mp4', title: 'Part 1', username: 'user1' },
+                                        { url: 'https://example.com/video2.mp4', title: 'Part 2', username: 'user2' }
+                                    ]
+                                }
                             });
                             return;
                         }
                     } else {
                         res.status(400).json({
                             error: 'Missing videos array parameter',
-                            example: { videos: ['https://example.com/video1.mp4', 'https://example.com/video2.mp4'] }
+                            example: { 
+                                videos: [
+                                    { url: 'https://example.com/video1.mp4', title: 'Part 1', username: 'user1' },
+                                    { url: 'https://example.com/video2.mp4', title: 'Part 2', username: 'user2' }
+                                ]
+                            }
                         });
                         return;
                     }
@@ -1074,6 +1225,7 @@ for (let prop in endpoints.types) {
                                     fieldname: 'video' + index,
                                     url: video.url,
                                     title: video.title || `Video ${index + 1}`,
+                                    username: video.username,
                                     filename: 'video' + index + '.mp4'
                                 });
                             } else if (typeof video === 'string') {
@@ -1092,8 +1244,8 @@ for (let prop in endpoints.types) {
                                 error: 'Timestamps requires at least 1 video URL',
                                 example: { 
                                     videos: [
-                                        { url: 'https://example.com/video1.mp4', title: 'Introduction' },
-                                        { url: 'https://example.com/video2.mp4', title: 'Main Content' }
+                                        { url: 'https://example.com/video1.mp4', title: 'Introduction', username: 'user1' },
+                                        { url: 'https://example.com/video2.mp4', title: 'Main Content', username: 'user2' }
                                     ]
                                 }
                             });
@@ -1104,8 +1256,8 @@ for (let prop in endpoints.types) {
                             error: 'Missing videos array parameter',
                             example: { 
                                 videos: [
-                                    { url: 'https://example.com/video1.mp4', title: 'Introduction' },
-                                    { url: 'https://example.com/video2.mp4', title: 'Main Content' }
+                                    { url: 'https://example.com/video1.mp4', title: 'Introduction', username: 'user1' },
+                                    { url: 'https://example.com/video2.mp4', title: 'Main Content', username: 'user2' }
                                 ]
                             }
                         });
@@ -1186,7 +1338,8 @@ for (let prop in endpoints.types) {
                             filename: inputUrl.filename,
                             savedFile: tempFile,
                             mimetype: contentType || 'application/octet-stream',
-                            title: inputUrl.title // Preserve title for timestamps endpoint
+                            title: inputUrl.title, // Preserve title for timestamps endpoint
+                            username: inputUrl.username // Preserve username for timestamps endpoint
                         };
                         
                         winston.info(JSON.stringify({
@@ -1215,6 +1368,35 @@ for (let prop in endpoints.types) {
 require('express-readme')(app, {
     filename: 'README.md',
     routes: ['/', '/readme'],
+});
+
+// Download endpoint for compiled videos
+app.get('/download/:id', function(req, res) {
+    const videoId = req.params.id;
+    const videoPath = app.locals.tempVideos && app.locals.tempVideos[videoId];
+    
+    if (videoPath && fs.existsSync(videoPath)) {
+        res.download(videoPath, videoId, function(err) {
+            if (err) {
+                winston.error(JSON.stringify({
+                    type: 'download_error',
+                    message: err.message,
+                    file: videoPath
+                }));
+            }
+            // Clean up after download
+            delete app.locals.tempVideos[videoId];
+            if (fs.existsSync(videoPath)) {
+                fs.unlinkSync(videoPath);
+                winston.info(JSON.stringify({
+                    action: 'deleted after download',
+                    file: videoPath,
+                }));
+            }
+        });
+    } else {
+        res.status(404).json({ error: 'Video not found or expired' });
+    }
 });
 
 const server = app.listen(consts.port, function() {
