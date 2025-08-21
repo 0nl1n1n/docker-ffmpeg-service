@@ -17,6 +17,34 @@ app.use(express.json({ limit: '50mb' }));
 winston.remove(winston.transports.Console);
 winston.add(winston.transports.Console, {'timestamp': true});
 
+// Helper function to format seconds to HH:MM:SS or MM:SS
+function formatTime(seconds) {
+    if (isNaN(seconds) || seconds < 0) {
+        return '00:00';
+    }
+    
+    let hours = Math.floor(seconds / 3600);
+    let minutes = Math.floor((seconds % 3600) / 60);
+    let secs = Math.floor(seconds % 60);
+    
+    if (hours > 0) {
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    } else {
+        return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+}
+
+// Helper function to parse time string back to seconds
+function parseTimeToSeconds(timeStr) {
+    let parts = timeStr.split(':').map(p => parseInt(p, 10));
+    if (parts.length === 3) {
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) {
+        return parts[0] * 60 + parts[1];
+    }
+    return 0;
+}
+
 // Helper function to download file from URL
 function downloadFile(fileUrl, callback) {
     const parsedUrl = url.parse(fileUrl);
@@ -64,6 +92,90 @@ function processFiles(files, ffmpegParams, res, winston) {
         count: uploadedFiles.length,
         to: outputFile,
     }));
+    
+    // Handle timestamps calculation
+    if (ffmpegParams.isTimestamps) {
+        winston.info(JSON.stringify({
+            action: 'calculating timestamps',
+            videos: uploadedFiles.length,
+        }));
+        
+        let timestamps = [];
+        let cumulativeTime = 0;
+        let processedCount = 0;
+        let hasError = false;
+        
+        uploadedFiles.forEach((file, index) => {
+            ffmpeg.ffprobe(file.savedFile, function(err, metadata) {
+                processedCount++;
+                
+                if (err) {
+                    winston.error(JSON.stringify({
+                        type: 'ffprobe_error',
+                        message: err.message || err,
+                        file: file.filename
+                    }));
+                    hasError = true;
+                } else {
+                    let duration = parseFloat(metadata.format.duration);
+                    
+                    // Store timestamp with title at the correct index
+                    timestamps[index] = {
+                        title: file.title || `Video ${index + 1}`,
+                        timestamp: formatTime(cumulativeTime),
+                        duration: formatTime(duration)
+                    };
+                    
+                    cumulativeTime += duration;
+                }
+                
+                // When all files are processed
+                if (processedCount === uploadedFiles.length) {
+                    // Clean up uploaded files
+                    uploadedFiles.forEach(file => {
+                        if (fs.existsSync(file.savedFile)) {
+                            fs.unlinkSync(file.savedFile);
+                        }
+                    });
+                    
+                    if (hasError) {
+                        res.writeHead(500, {'Connection': 'close'});
+                        res.end(JSON.stringify({error: 'Failed to process some videos'}));
+                        return;
+                    }
+                    
+                    // Calculate cumulative timestamps
+                    let cumulative = 0;
+                    timestamps = timestamps.map(item => {
+                        let result = {
+                            title: item.title,
+                            timestamp: formatTime(cumulative),
+                            duration: item.duration
+                        };
+                        cumulative += parseTimeToSeconds(item.duration);
+                        return result;
+                    });
+                    
+                    // Return JSON response
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json',
+                        'Content-Disposition': 'attachment; filename="timestamps.json"'
+                    });
+                    res.end(JSON.stringify({
+                        timestamps: timestamps,
+                        total_duration: formatTime(cumulative)
+                    }, null, 2));
+                    
+                    winston.info(JSON.stringify({
+                        action: 'timestamps calculated',
+                        count: timestamps.length,
+                        total: formatTime(cumulative)
+                    }));
+                }
+            });
+        });
+        return;
+    }
     
     // Handle simple compilation processing (no blur, maintain first video dimensions)
     if (ffmpegParams.isCompilationSimple) {
@@ -888,6 +1000,52 @@ for (let prop in endpoints.types) {
                         });
                         return;
                     }
+                } else if (ffmpegParams.isTimestamps) {
+                    // Timestamps endpoint - expect array of video objects with URL and title
+                    if (req.body.videos && Array.isArray(req.body.videos)) {
+                        req.body.videos.forEach((video, index) => {
+                            if (typeof video === 'object' && video.url) {
+                                inputUrls.push({
+                                    fieldname: 'video' + index,
+                                    url: video.url,
+                                    title: video.title || `Video ${index + 1}`,
+                                    filename: 'video' + index + '.mp4'
+                                });
+                            } else if (typeof video === 'string') {
+                                // Support simple URL strings as well
+                                inputUrls.push({
+                                    fieldname: 'video' + index,
+                                    url: video,
+                                    title: `Video ${index + 1}`,
+                                    filename: 'video' + index + '.mp4'
+                                });
+                            }
+                        });
+                        
+                        if (inputUrls.length < 1) {
+                            res.status(400).json({
+                                error: 'Timestamps requires at least 1 video URL',
+                                example: { 
+                                    videos: [
+                                        { url: 'https://example.com/video1.mp4', title: 'Introduction' },
+                                        { url: 'https://example.com/video2.mp4', title: 'Main Content' }
+                                    ]
+                                }
+                            });
+                            return;
+                        }
+                    } else {
+                        res.status(400).json({
+                            error: 'Missing videos array parameter',
+                            example: { 
+                                videos: [
+                                    { url: 'https://example.com/video1.mp4', title: 'Introduction' },
+                                    { url: 'https://example.com/video2.mp4', title: 'Main Content' }
+                                ]
+                            }
+                        });
+                        return;
+                    }
                 } else if (ffmpegParams.multiFile && ffmpegParams.requires) {
                     // Multi-file endpoints
                     ffmpegParams.requires.forEach(requiredField => {
@@ -931,7 +1089,7 @@ for (let prop in endpoints.types) {
                 }));
                 
                 // Download all files
-                let downloadedFiles = [];
+                let downloadedFiles = new Array(inputUrls.length); // Pre-allocate array to maintain order
                 let downloadCount = 0;
                 let hasError = false;
                 
@@ -957,17 +1115,20 @@ for (let prop in endpoints.types) {
                             return;
                         }
                         
-                        downloadedFiles.push({
+                        // Store at the correct index to maintain order
+                        downloadedFiles[index] = {
                             fieldname: inputUrl.fieldname,
                             filename: inputUrl.filename,
                             savedFile: tempFile,
-                            mimetype: contentType || 'application/octet-stream'
-                        });
+                            mimetype: contentType || 'application/octet-stream',
+                            title: inputUrl.title // Preserve title for timestamps endpoint
+                        };
                         
                         winston.info(JSON.stringify({
                             action: 'file downloaded',
                             url: inputUrl.url,
                             saved: tempFile,
+                            index: index,
                         }));
                         
                         // Process when all downloads are complete

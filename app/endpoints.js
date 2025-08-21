@@ -111,4 +111,10 @@ exports.types = {
         ],
         urlSupport: true,
     },
+    'compilation-timestamps': {
+        extension: 'json',
+        multiFile: true,
+        isTimestamps: true,
+        urlSupport: true,
+    },
 };

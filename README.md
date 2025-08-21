@@ -47,6 +47,7 @@ All endpoints also support URL inputs via JSON POST requests:
 - `POST /audio-mix/url` - Mix background URL + vocals URL with effects
 - `POST /compilation/url` - Combine multiple video URLs into compilation with blur
 - `POST /compilation-simple/url` - Combine multiple video URLs maintaining dimensions
+- `POST /compilation-timestamps/url` - Calculate timestamps for videos in a compilation
 
 ## Usage Examples
 
@@ -177,6 +178,18 @@ curl -X POST \
     ]
   }' \
   http://localhost:3000/compilation-simple/url
+
+# Get timestamps for video compilation
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "videos": [
+      {"url": "https://example.com/video1.mp4", "title": "Introduction"},
+      {"url": "https://example.com/video2.mp4", "title": "Main Content"},
+      {"url": "https://example.com/video3.mp4", "title": "Conclusion"}
+    ]
+  }' \
+  http://localhost:3000/compilation-timestamps/url
 ```
 
 ## Audio Mixing Features
@@ -209,6 +222,26 @@ The compilation-simple endpoint creates basic compilations:
 - **No Blur Effect**: Clean, simple concatenation without effects
 - **Sequential Playback**: Videos play one after another in the order provided
 - **Audio Preservation**: Maintains audio from all source videos
+
+### Compilation Timestamps
+The compilation-timestamps endpoint calculates video timestamps:
+
+- **Timestamp Calculation**: Returns the start time of each video in a compilation
+- **Title Support**: Accepts optional titles for each video
+- **Duration Info**: Includes individual video durations
+- **Total Duration**: Provides the total compilation runtime
+- **JSON Output**: Returns data in structured JSON format
+- **Example Output**:
+```json
+{
+  "timestamps": [
+    {"title": "Introduction", "timestamp": "00:00", "duration": "01:30"},
+    {"title": "Main Content", "timestamp": "01:30", "duration": "05:15"},
+    {"title": "Conclusion", "timestamp": "06:45", "duration": "02:00"}
+  ],
+  "total_duration": "08:45"
+}
+```
 
 ## Deployment
 

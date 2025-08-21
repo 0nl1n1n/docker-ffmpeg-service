@@ -2,9 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Recent Updates (2025-08-01)
+## Recent Updates
 
-### Fixed Audio Sync Issue in Video Compilation
+### Added Video Order Preservation (2025-08-20)
+- **Problem**: Videos in compilation endpoints were being processed out of order due to asynchronous downloads
+- **Solution**: Pre-allocate downloadedFiles array and store files at their original index positions to maintain order
+
+### Added Compilation Timestamps Endpoint (2025-08-20)
+- **New Endpoint**: `/compilation-timestamps/url` calculates start timestamps for videos in a compilation
+- **Features**: 
+  - Accepts array of video URLs with optional titles
+  - Returns JSON with timestamps, durations, and total runtime
+  - Uses ffprobe to extract accurate video durations
+  - Maintains video order from input array
+
+### Fixed Audio Sync Issue in Video Compilation (2025-08-01)
 - **Problem**: Audio drift in `/compilation-simple/url` endpoint when concatenating multiple videos
 - **Cause**: Timestamp misalignment during video preprocessing and concatenation
 - **Solution**: Added timestamp synchronization using:
