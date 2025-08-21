@@ -8,6 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Problem**: Videos in compilation endpoints were being processed out of order due to asynchronous downloads
 - **Solution**: Pre-allocate downloadedFiles array and store files at their original index positions to maintain order
 
+### Fixed Timestamp Duration Calculation (2025-08-21)
+- **Problem**: Timestamp durations were longer than actual compiled video (e.g., 1:33 vs 1:28)
+- **Cause**: Raw durations didn't account for timestamp adjustments from audio sync filters
+- **Solution**: Calculate adjusted duration by subtracting negative start_time values, matching the effect of `-avoid_negative_ts make_zero`
+
 ### Added Compilation Timestamps Endpoint (2025-08-20)
 - **New Endpoint**: `/compilation-timestamps/url` calculates start timestamps for videos in a compilation
 - **Features**: 

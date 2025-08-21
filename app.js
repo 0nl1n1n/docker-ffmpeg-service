@@ -106,6 +106,7 @@ function processFiles(files, ffmpegParams, res, winston) {
         let hasError = false;
         
         uploadedFiles.forEach((file, index) => {
+            // Get both raw duration and start time to calculate adjusted duration
             ffmpeg.ffprobe(file.savedFile, function(err, metadata) {
                 processedCount++;
                 
@@ -117,20 +118,37 @@ function processFiles(files, ffmpegParams, res, winston) {
                     }));
                     hasError = true;
                 } else {
-                    let duration = parseFloat(metadata.format.duration);
+                    let rawDuration = parseFloat(metadata.format.duration);
+                    let startTime = parseFloat(metadata.format.start_time) || 0;
+                    
+                    // Adjust duration by removing negative start time (same effect as -avoid_negative_ts make_zero)
+                    let adjustedDuration = rawDuration - Math.abs(startTime);
                     
                     // Store timestamp with title at the correct index
                     timestamps[index] = {
                         title: file.title || `Video ${index + 1}`,
                         timestamp: formatTime(cumulativeTime),
-                        duration: formatTime(duration)
+                        duration: formatTime(adjustedDuration)
                     };
                     
-                    cumulativeTime += duration;
+                    cumulativeTime += adjustedDuration;
+                    
+                    winston.info(JSON.stringify({
+                        action: 'duration_calculated',
+                        file: file.filename,
+                        raw_duration: rawDuration,
+                        start_time: startTime,
+                        adjusted_duration: adjustedDuration
+                    }));
                 }
                 
-                // When all files are processed
                 if (processedCount === uploadedFiles.length) {
+                    finishProcessing();
+                }
+            });
+        });
+        
+        function finishProcessing() {
                     // Clean up uploaded files
                     uploadedFiles.forEach(file => {
                         if (fs.existsSync(file.savedFile)) {
@@ -171,9 +189,7 @@ function processFiles(files, ffmpegParams, res, winston) {
                         count: timestamps.length,
                         total: formatTime(cumulative)
                     }));
-                }
-            });
-        });
+        }
         return;
     }
     
