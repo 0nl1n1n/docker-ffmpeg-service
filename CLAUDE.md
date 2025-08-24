@@ -4,6 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Recent Updates
 
+### Added Cover Creation Endpoint (2025-08-24)
+- **New Endpoint**: `/cover` and `/cover/url` creates image collages from 3 vertical images
+- **Features**:
+  - Takes 3 image URLs: left, middle, right
+  - Creates horizontal collage by scaling all images to same height (1080px)
+  - Uses FFmpeg's hstack filter for seamless side-by-side arrangement
+  - Outputs high-quality JPEG (95% quality, yuvj420p pixel format)
+  - Supports both file uploads and URL inputs
+- **Usage**: `POST /cover/url` with JSON: `{"left": "url1", "middle": "url2", "right": "url3"}`
+
 ### Merged Compilation and Timestamps Endpoints (2025-08-21)
 - **Merged**: `/compilation-simple/url` now returns both video and timestamps
 - **Features**:
@@ -54,7 +64,7 @@ This is a Node.js/Express web service that provides FFmpeg conversion capabiliti
 2. **Endpoint Configuration (`app/endpoints.js`)**:
    - Defines conversion types and their FFmpeg parameters
    - Each endpoint type specifies output format, FFmpeg options, and whether it supports URL input
-   - Special endpoints: audio-image-mp4 (multi-file), audio-mix (complex filtering), audio-duration (ffprobe), compilation (video concatenation with blur effect)
+   - Special endpoints: audio-image-mp4 (multi-file), audio-mix (complex filtering), audio-duration (ffprobe), compilation (video concatenation with blur effect), cover (image collage creation)
 
 3. **Constants (`app/constants.js`)**:
    - fileSizeLimit: 524MB
@@ -65,7 +75,7 @@ This is a Node.js/Express web service that provides FFmpeg conversion capabiliti
 
 1. **File Upload**: Files are uploaded via multipart/form-data, saved temporarily, processed with FFmpeg, then deleted
 2. **URL Input**: Files are downloaded from URLs, processed identically to uploads
-3. **Multi-file Operations**: Some endpoints (audio-image-mp4, audio-mix, compilation) require multiple input files with specific field names
+3. **Multi-file Operations**: Some endpoints (audio-image-mp4, audio-mix, compilation, cover) require multiple input files with specific field names
 4. **Compilation Processing**: Videos are processed individually with blur effect, then concatenated using FFmpeg's concat demuxer
 
 ## Common Commands
@@ -85,6 +95,7 @@ docker run -p 3000:3000 ffmpeg-service
 ./test-url-endpoints.sh
 ./test-fade-timing.sh
 ./test-compilation.sh
+./test-cover.sh
 ```
 
 ## Development Notes

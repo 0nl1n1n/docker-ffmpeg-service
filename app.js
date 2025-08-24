@@ -246,6 +246,139 @@ function processFiles(files, ffmpegParams, res, winston) {
         return;
     }
     
+    // Handle cover creation (3 images side by side)
+    if (ffmpegParams.isCover) {
+        winston.info(JSON.stringify({
+            action: 'begin cover creation',
+            images: uploadedFiles.length,
+            to: outputFile,
+        }));
+        
+        if (uploadedFiles.length !== 3) {
+            let err = JSON.stringify({
+                type: 'input_error',
+                message: 'Cover creation requires exactly 3 images (left, middle, right)',
+                received: uploadedFiles.length
+            });
+            winston.error(err);
+            // Clean up uploaded files
+            uploadedFiles.forEach(file => {
+                if (fs.existsSync(file.savedFile)) {
+                    fs.unlinkSync(file.savedFile);
+                }
+            });
+            res.writeHead(400, {'Connection': 'close'});
+            res.end(err);
+            return;
+        }
+        
+        // Find the left, middle, and right images
+        let leftImage = null;
+        let middleImage = null;
+        let rightImage = null;
+        
+        uploadedFiles.forEach(file => {
+            if (file.fieldname === 'left') {
+                leftImage = file.savedFile;
+            } else if (file.fieldname === 'middle') {
+                middleImage = file.savedFile;
+            } else if (file.fieldname === 'right') {
+                rightImage = file.savedFile;
+            }
+        });
+        
+        if (!leftImage || !middleImage || !rightImage) {
+            let err = JSON.stringify({
+                type: 'input_error',
+                message: 'Missing required images',
+                required: ['left', 'middle', 'right'],
+                received: uploadedFiles.map(f => f.fieldname)
+            });
+            winston.error(err);
+            // Clean up uploaded files
+            uploadedFiles.forEach(file => {
+                if (fs.existsSync(file.savedFile)) {
+                    fs.unlinkSync(file.savedFile);
+                }
+            });
+            res.writeHead(400, {'Connection': 'close'});
+            res.end(err);
+            return;
+        }
+        
+        winston.info(JSON.stringify({
+            action: 'creating cover collage',
+            left: leftImage,
+            middle: middleImage,
+            right: rightImage,
+            to: outputFile,
+        }));
+        
+        // Create horizontal collage using hstack filter
+        let ffmpegConvertCommand = ffmpeg()
+            .input(leftImage)
+            .input(middleImage)
+            .input(rightImage)
+            .renice(15)
+            .complexFilter([
+                // Scale all images to same height (1080px) while maintaining aspect ratio
+                '[0:v]scale=-1:1080[left]',
+                '[1:v]scale=-1:1080[middle]',
+                '[2:v]scale=-1:1080[right]',
+                // Stack horizontally
+                '[left][middle][right]hstack=inputs=3[out]'
+            ])
+            .outputOptions(['-map', '[out]'])
+            .outputOptions(ffmpegParams.outputOptions)
+            .on('error', function(err, stdout, stderr) {
+                let log = JSON.stringify({
+                    type: 'ffmpeg_cover',
+                    message: err.message || err,
+                    stdout: stdout,
+                    stderr: stderr,
+                    command: ffmpegConvertCommand._getArguments ? ffmpegConvertCommand._getArguments().join(' ') : 'unknown'
+                });
+                winston.error(log);
+                // Clean up uploaded files
+                uploadedFiles.forEach(file => {
+                    if (fs.existsSync(file.savedFile)) {
+                        fs.unlinkSync(file.savedFile);
+                    }
+                });
+                res.writeHead(500, {'Connection': 'close'});
+                res.end(log);
+            })
+            .on('end', function() {
+                // Clean up uploaded files
+                uploadedFiles.forEach(file => {
+                    if (fs.existsSync(file.savedFile)) {
+                        fs.unlinkSync(file.savedFile);
+                    }
+                });
+                
+                winston.info(JSON.stringify({
+                    action: 'starting download to client',
+                    file: outputFile,
+                }));
+                res.download(outputFile, null, function(err) {
+                    if (err) {
+                        winston.error(JSON.stringify({
+                            type: 'download',
+                            message: err.message || err,
+                        }));
+                    }
+                    winston.info(JSON.stringify({
+                        action: 'deleting',
+                        file: outputFile,
+                    }));
+                    fs.unlinkSync(outputFile);
+                });
+            })
+            .save(outputFile);
+        
+        return;
+    }
+    
     // Handle simple compilation processing (no blur, maintain first video dimensions)
     if (ffmpegParams.isCompilationSimple) {
         winston.info(JSON.stringify({

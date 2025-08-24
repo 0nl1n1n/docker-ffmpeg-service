@@ -117,4 +117,15 @@ exports.types = {
         isTimestamps: true,
         urlSupport: true,
     },
+    'cover': {
+        extension: 'jpg',
+        multiFile: true,
+        requires: ['left', 'middle', 'right'],
+        isCover: true,
+        outputOptions: [
+            '-quality', '95',
+            '-pix_fmt', 'yuvj420p',
+        ],
+        urlSupport: true,
+    },
 };
